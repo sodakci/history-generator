@@ -1,0 +1,11 @@
+# Local tools and build artifacts
+/.tools/
+/benchbase/.m2/
+/benchbase/target/
+
+# Generated workloads and local database credentials
+/kv/.runtime/
+
+# Local Python bytecode
+__pycache__/
+*.py[cod]
