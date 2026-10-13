@@ -21,6 +21,7 @@
     <maxTxnLength>4</maxTxnLength>
     <maxWritesPerKey>256</maxWritesPerKey>
     <predicateGroupCount>4</predicateGroupCount>
+    <predicateRangeEnabled>false</predicateRangeEnabled>
     <!-- Controlled benchmark mode is disabled when these values are negative. -->
     <predicateTransactionRatio>-1</predicateTransactionRatio>
     <writesPerTransaction>-1</writesPerTransaction>

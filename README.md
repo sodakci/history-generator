@@ -98,7 +98,9 @@ chmod 600 kv/.runtime/pgpass
 | `TXNS_PER_SESSION`                | 每个 session 的已提交事务数，生成后会校验                                       |
 | `MIN_TXN_LENGTH`、`MAX_TXN_LENGTH` | 每事务操作数的最小值和最大值；固定长度时设为相同值                                       |
 | `KEY_COUNT`                       | 初始 KV 行数                                                        |
+| `READ_RATIO`                      | 总读操作百分比（点读 + 谓词读），范围 0～100；未设置时沿用原有点读／写随机分配 |
 | `PREDICATE_READ_RATIO`            | 谓词读操作百分比，范围为 0～100                                              |
+| `PREDICATE_RANGE_ENABLED`         | 区间谓词开关，取值 `true`/`false`；XML 参数为 `predicateRangeEnabled`，缺省 `false`；环境变量为空时保留基础 XML 值 |
 | `KEY_DIST`                        | 点读和写的 key 分布：`uniform`、`zipf`/`zipfian`、`hotspot`、`exponential` |
 
 
@@ -110,6 +112,10 @@ chmod 600 kv/.runtime/pgpass
 - 运行和连接：`BUILD`、`LOAD`、`CASE_NAME`、`BASE_CONFIG`、`KVPREDICATE_CONFIG`、`BENCHBASE_JAR`、`JAVA_ENV`、`DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PASSWORD`、`KVPREDICATE_DSN`、`PGPASSFILE`；预期结果元数据可用 `EXPECTED_VERDICT`、`SERIAL_ORDER`。
 
 目录名中的谓词比例按 0～1 的小数写，生成器参数按百分数写：目录名 `0.002` 对应 `PREDICATE_READ_RATIO=0.20`，表示 0.2%。实际提交历史的比例以 `manifest.json` 中 `predicate_reads / operations` 为准；发生 abort 时可能偏离配置值。固定 `RANDOM_SEED` 时各 worker 会使用相同种子，可能产生重复的 key 序列。
+
+指定 `READ_RATIO` 时，按全部事件配额分配总读数，再在读事件内分配谓词读；`PREDICATE_READ_RATIO` 仍表示谓词读占全部事件的百分比，不能大于 `READ_RATIO`。该配置用于普通生成，不能与受控生成或异常注入同时启用。目录 `20_100_10_5000_0.3_0.05` 表示 20 个 session、每个 100 个事务、每事务 10 个事件、5000 个 key、总读比例 0.3、读中谓词比例 0.05，应设置 `READ_RATIO=30`、`PREDICATE_READ_RATIO=1.5`。这份历史包含 20000 个事件，其中 5700 个点读、300 个谓词读和 14000 个写。批量生成使用各配置的 `hist-00000`、`hist-00001`、`hist-00002`；每份通过转换、审计及计数校验后删除该份 `raw_kvpredicate_trace.jsonl`，保留压缩 history、初始状态和 manifest。
+
+普通生成的随机谓词默认关闭区间：`predicateRangeEnabled=false` 或未配置时，从全表、取模、等值、大于、小于（`TRUE`、`MOD`、`EQ`、`GT`、`LT`）五种类型中选择，各占 `1/5`。设置环境变量 `PREDICATE_RANGE_ENABLED=true` 或基础 XML 的 `<predicateRangeEnabled>true</predicateRangeEnabled>` 后，加入区间（`RANGE`），六种类型各占 `1/6`；`PREDICATE_RANGE_ENABLED=false` 可显式关闭，环境变量未设置或为空时沿用基础 XML 值。此开关只控制随机谓词集合，不改变总谓词比例、`READ_RATIO`、受控生成模式或异常核心事务。区间每次随机生成上下界，使用严格开区间，例如 `90 < value < 100` 对应 `value > 90 AND value < 100`，不包含 90 和 100。上下界取样范围沿用当前已分配 value 的范围，取样相同时将上界加一；区间可以返回空结果。
 
 ## 生成历史
 

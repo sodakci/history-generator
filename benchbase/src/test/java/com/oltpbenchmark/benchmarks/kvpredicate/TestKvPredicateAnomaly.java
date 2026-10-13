@@ -7,13 +7,129 @@ import static org.junit.Assert.assertTrue;
 import com.oltpbenchmark.WorkloadConfiguration;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import org.apache.commons.configuration2.XMLConfiguration;
 import org.junit.Test;
 
 public class TestKvPredicateAnomaly {
+  @Test
+  public void testRandomPredicatesIncludeRanges() {
+    for (int keyCount : new int[] {1, 5000}) {
+      XMLConfiguration xml = new XMLConfiguration();
+      xml.setProperty("keyCount", keyCount);
+      xml.setProperty("minTxnLength", 10);
+      xml.setProperty("maxTxnLength", 10);
+      xml.setProperty("predicateReadRatio", 100.0);
+      xml.setProperty("predicateRangeEnabled", true);
+      WorkloadConfiguration configuration = new WorkloadConfiguration();
+      configuration.setBenchmarkName("kvpredicate");
+      configuration.setTerminals(1);
+      configuration.setXmlConfig(xml);
+      KvPredicateBenchmark benchmark = new KvPredicateBenchmark(configuration);
+      Random random = new Random(41L);
+      int rangeCount = 0;
+      Set<String> ranges = new HashSet<>();
+      for (int transaction = 0; transaction < 100; transaction++) {
+        for (KvPredicateOperation operation : benchmark.nextTransaction(0, random)) {
+          assertEquals(KvPredicateOperation.Kind.PREDICATE, operation.kind);
+          if (operation.predicateKind == KvPredicateOperation.PredicateKind.RANGE) {
+            assertTrue(operation.lowerBound >= 0L);
+            assertTrue(operation.lowerBound < operation.upperBound);
+            assertTrue(operation.upperBound <= keyCount);
+            ranges.add(operation.lowerBound + ":" + operation.upperBound);
+            if (keyCount == 1) {
+              assertEquals(0L, operation.lowerBound);
+              assertEquals(1L, operation.upperBound);
+            }
+            rangeCount++;
+          }
+        }
+      }
+      assertTrue("random predicates must include ranges", rangeCount > 0);
+      if (keyCount > 1) {
+        assertTrue("range bounds must vary between predicate reads", ranges.size() > 1);
+      }
+    }
+  }
+
+  @Test
+  public void testRandomPredicatesExcludeRangesByDefault() {
+    assertOnlyOriginalPredicates(-1.0, null);
+  }
+
+  @Test
+  public void testRandomPredicatesExcludeRangesWhenDisabled() {
+    assertOnlyOriginalPredicates(-1.0, false);
+  }
+
+  @Test
+  public void testConfiguredReadsExcludeRangesByDefault() {
+    assertOnlyOriginalPredicates(100.0, null);
+  }
+
+  @Test
+  public void testConfiguredReadsExcludeRangesWhenDisabled() {
+    assertOnlyOriginalPredicates(100.0, false);
+  }
+
+  @Test
+  public void testRangeRejectsInvalidBounds() {
+    assertThrows(
+        IllegalArgumentException.class, () -> KvPredicateOperation.predicateRange(90L, 90L));
+    assertThrows(
+        IllegalArgumentException.class, () -> KvPredicateOperation.predicateRange(100L, 90L));
+  }
+
+  @Test
+  public void testTotalReadsIncludeConfiguredPredicateShare() {
+    for (int transactionsPerSession : new int[] {100, 200, 300, 400, 500}) {
+      for (double readRatio : new double[] {30.0, 50.0, 95.0}) {
+        for (double predicateShare : new double[] {0.0, 0.05, 0.10, 0.15, 0.20}) {
+          XMLConfiguration xml = new XMLConfiguration();
+          xml.setProperty("keyCount", 5000);
+          xml.setProperty("keyDist", "uniform");
+          xml.setProperty("minTxnLength", 10);
+          xml.setProperty("maxTxnLength", 10);
+          xml.setProperty("maxWritesPerKey", Integer.MAX_VALUE);
+          xml.setProperty("readRatio", readRatio);
+          xml.setProperty("predicateReadRatio", readRatio * predicateShare);
+          WorkloadConfiguration configuration = new WorkloadConfiguration();
+          configuration.setBenchmarkName("kvpredicate");
+          configuration.setTerminals(20);
+          configuration.setXmlConfig(xml);
+          KvPredicateBenchmark benchmark = new KvPredicateBenchmark(configuration);
+          Random random = new Random(41L);
+          int reads = 0;
+          int predicates = 0;
+          int writes = 0;
+          for (int transaction = 0; transaction < 20 * transactionsPerSession; transaction++) {
+            List<KvPredicateOperation> operations =
+                benchmark.nextTransaction(transaction % 20, random);
+            assertEquals(10, operations.size());
+            for (KvPredicateOperation operation : operations) {
+              if (operation.kind == KvPredicateOperation.Kind.READ) {
+                reads++;
+              } else if (operation.kind == KvPredicateOperation.Kind.PREDICATE) {
+                predicates++;
+              } else if (operation.kind == KvPredicateOperation.Kind.WRITE) {
+                writes++;
+              }
+            }
+          }
+          int operationCount = 200 * transactionsPerSession;
+          int expectedReads = (int) Math.round(operationCount * readRatio / 100.0);
+          assertEquals(expectedReads, reads + predicates);
+          assertEquals((int) Math.round(expectedReads * predicateShare), predicates);
+          assertEquals(operationCount - expectedReads, writes);
+        }
+      }
+    }
+  }
+
   @Test
   public void testInjectedAndControlUseSameSeededLayout() {
     KvPredicateBenchmark injected = benchmark("injected", true, 5.0, 10, 15);
@@ -148,6 +264,40 @@ public class TestKvPredicateAnomaly {
       assertTrue(entry.getKey() >= 3L && entry.getKey() < 13L);
       assertEquals(Integer.valueOf(10), entry.getValue());
     }
+  }
+
+  private static void assertOnlyOriginalPredicates(double readRatio, Boolean rangeEnabled) {
+    XMLConfiguration xml = new XMLConfiguration();
+    xml.setProperty("keyCount", 5000);
+    xml.setProperty("minTxnLength", 10);
+    xml.setProperty("maxTxnLength", 10);
+    xml.setProperty("readRatio", readRatio);
+    xml.setProperty("predicateReadRatio", 100.0);
+    if (rangeEnabled != null) {
+      xml.setProperty("predicateRangeEnabled", rangeEnabled);
+    }
+    WorkloadConfiguration configuration = new WorkloadConfiguration();
+    configuration.setBenchmarkName("kvpredicate");
+    configuration.setTerminals(1);
+    configuration.setXmlConfig(xml);
+    KvPredicateBenchmark benchmark = new KvPredicateBenchmark(configuration);
+    Random random = new Random(41L);
+    Set<KvPredicateOperation.PredicateKind> predicateKinds = new HashSet<>();
+    for (int transaction = 0; transaction < 100; transaction++) {
+      for (KvPredicateOperation operation : benchmark.nextTransaction(0, random)) {
+        assertEquals(KvPredicateOperation.Kind.PREDICATE, operation.kind);
+        predicateKinds.add(operation.predicateKind);
+      }
+    }
+    assertEquals(
+        "disabled ranges must leave all five original predicate kinds available",
+        Set.of(
+            KvPredicateOperation.PredicateKind.TRUE,
+            KvPredicateOperation.PredicateKind.EQUALS,
+            KvPredicateOperation.PredicateKind.MOD,
+            KvPredicateOperation.PredicateKind.GREATER_THAN,
+            KvPredicateOperation.PredicateKind.LESS_THAN),
+        predicateKinds);
   }
 
   private static void assertCore(

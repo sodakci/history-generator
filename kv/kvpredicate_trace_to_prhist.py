@@ -164,6 +164,12 @@ def predicate_to_query(predicate: dict[str, Any], context: str) -> dict[str, Any
         where = [f"value > {require_int(predicate.get('value'), f'{context}.predicate.value')}"]
     elif kind == "lt":
         where = [f"value < {require_int(predicate.get('value'), f'{context}.predicate.value')}"]
+    elif kind == "range":
+        lower = require_int(predicate.get("lower"), f"{context}.predicate.lower")
+        upper = require_int(predicate.get("upper"), f"{context}.predicate.upper")
+        if lower >= upper:
+            raise ConversionError(f"{context}.predicate: lower must be less than upper")
+        where = [f"value > {lower}", f"value < {upper}"]
     else:
         raise ConversionError(f"{context}: unsupported kvpredicate predicate kind {kind!r}")
     return {
@@ -635,7 +641,7 @@ def convert(
             "history": "history.prhist.jsonl.zst",
             "raw_trace": "raw_kvpredicate_trace.jsonl",
         },
-        "predicate_mapping": "Predicate reads emit SQL-shaped kv predicates: TRUE, value equality, value modulo, value greater-than, and value less-than.",
+        "predicate_mapping": "Predicate reads emit SQL-shaped kv predicates: TRUE, value equality, value modulo, value greater-than, value less-than, and open value ranges.",
         "version_mapping": "kv.value is globally unique and is used as both business value and PRHIST version id.",
         "captured_aborted_attempts": abort_count,
         "compression": "zstd-level-3",

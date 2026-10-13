@@ -138,7 +138,8 @@ public final class KvPredicateTrace {
       } else {
         stmt.setObject(2, null);
       }
-      if (operation.predicateKind == KvPredicateOperation.PredicateKind.TRUE) {
+      if (operation.predicateKind == KvPredicateOperation.PredicateKind.TRUE
+          || operation.predicateKind == KvPredicateOperation.PredicateKind.RANGE) {
         stmt.setObject(3, null);
       } else {
         stmt.setLong(3, operation.target);
@@ -162,6 +163,8 @@ public final class KvPredicateTrace {
         return "gt";
       case LESS_THAN:
         return "lt";
+      case RANGE:
+        return "range";
       default:
         throw new IllegalArgumentException("unknown predicate kind " + operation.predicateKind);
     }

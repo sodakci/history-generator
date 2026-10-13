@@ -36,7 +36,9 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
   private final int maxWritesPerKey;
   private final int predicateGroupCount;
   private final int transactionsPerSession;
+  private final double readRatio;
   private final double predicateReadRatio;
+  private final boolean predicateRangeEnabled;
   private final double predicateTransactionRatio;
   private final int writesPerTransaction;
   private final int writeKeyCount;
@@ -57,6 +59,7 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
   private long nextKey;
   private long nextWrite;
   private long generatedVisibleOps;
+  private long generatedReads;
   private long generatedPredicateReads;
   private long generatedControlledTransactions;
   private long generatedControlledPredicateTransactions;
@@ -80,7 +83,9 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
     this.maxWritesPerKey = getInt(xml, "maxWritesPerKey", 256);
     this.predicateGroupCount = getInt(xml, "predicateGroupCount", 4);
     this.transactionsPerSession = getInt(xml, "transactionsPerSession", 0);
+    this.readRatio = getDouble(xml, "readRatio", -1.0);
     this.predicateReadRatio = getDouble(xml, "predicateReadRatio", 100.0 / 3.0);
+    this.predicateRangeEnabled = getBoolean(xml, "predicateRangeEnabled", false);
     this.predicateTransactionRatio = getDouble(xml, "predicateTransactionRatio", -1.0);
     this.writesPerTransaction = getInt(xml, "writesPerTransaction", -1);
     this.writeKeyCount = getInt(xml, "writeKeyCount", 0);
@@ -122,6 +127,19 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
     }
     if (this.predicateReadRatio < 0.0 || this.predicateReadRatio > 100.0) {
       throw new IllegalArgumentException("predicateReadRatio must be between 0 and 100");
+    }
+    if (!Double.isFinite(this.readRatio)
+        || (this.readRatio != -1.0 && (this.readRatio < 0.0 || this.readRatio > 100.0))) {
+      throw new IllegalArgumentException("readRatio must be -1 or between 0 and 100");
+    }
+    if (this.readRatio >= 0.0
+        && (!Double.isFinite(this.predicateReadRatio)
+            || this.predicateReadRatio > this.readRatio)) {
+      throw new IllegalArgumentException("predicateReadRatio must not exceed readRatio");
+    }
+    if (this.readRatio >= 0.0
+        && (this.controlledGeneration || !"none".equals(this.anomalyMode))) {
+      throw new IllegalArgumentException("readRatio requires ordinary generation without anomalies");
     }
     if ((this.predicateTransactionRatio >= 0.0) != (this.writesPerTransaction >= 0)) {
       throw new IllegalArgumentException(
@@ -355,6 +373,25 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
       List<KvPredicateOperation> ops = new ArrayList<>(length);
       for (int index = 0; index < length; index++) {
         generatedVisibleOps++;
+        if (readRatio >= 0.0) {
+          long targetReads = Math.round(generatedVisibleOps * readRatio / 100.0);
+          if (generatedReads < targetReads) {
+            generatedReads++;
+            long targetPredicates = Math.round(generatedReads * predicateReadRatio / readRatio);
+            if (generatedPredicateReads < targetPredicates) {
+              generatedPredicateReads++;
+              ops.add(randomPredicate(random));
+            } else {
+              ops.add(KvPredicateOperation.read(chooseKey(random)));
+            }
+          } else {
+            long key = chooseKey(random);
+            long value = nextWrite++;
+            rotateKey(key);
+            ops.add(KvPredicateOperation.write(key, value));
+          }
+          continue;
+        }
         long targetPredicates = Math.round(generatedVisibleOps * predicateReadRatio / 100.0);
         if (generatedPredicateReads < targetPredicates) {
           generatedPredicateReads++;
@@ -427,7 +464,7 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
           ? KvPredicateOperation.predicateEquals(target)
           : KvPredicateOperation.predicateLessThan(target);
     }
-    int choice = random.nextInt(5);
+    int choice = random.nextInt(predicateRangeEnabled ? 6 : 5);
     if (choice == 0) {
       return KvPredicateOperation.predicateTrue();
     }
@@ -442,7 +479,16 @@ public final class KvPredicateBenchmark extends BenchmarkModule {
     if (choice == 3) {
       return KvPredicateOperation.predicateGreaterThan(target);
     }
-    return KvPredicateOperation.predicateLessThan(target);
+    if (choice == 4) {
+      return KvPredicateOperation.predicateLessThan(target);
+    }
+    long other = nextWrite <= 0 ? 0 : nonNegativeLong(random, nextWrite);
+    long lowerBound = Math.min(target, other);
+    long upperBound = Math.max(target, other);
+    if (lowerBound == upperBound) {
+      upperBound++;
+    }
+    return KvPredicateOperation.predicateRange(lowerBound, upperBound);
   }
 
   private long chooseKey(Random random) {

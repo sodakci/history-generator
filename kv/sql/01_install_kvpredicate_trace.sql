@@ -342,6 +342,8 @@ DECLARE
     v_op_index INTEGER := ser_kvpredicate_trace.next_op_index();
     v_predicate JSONB;
     v_results JSONB;
+    v_lower BIGINT;
+    v_upper BIGINT;
 BEGIN
     IF p_kind = 'true' THEN
         v_predicate := jsonb_build_object('kind', 'true');
@@ -353,6 +355,13 @@ BEGIN
         v_predicate := jsonb_build_object('kind', 'gt', 'value', p_target);
     ELSIF p_kind = 'lt' THEN
         v_predicate := jsonb_build_object('kind', 'lt', 'value', p_target);
+    ELSIF p_kind = 'range' THEN
+        v_lower := (p_parameters->>0)::BIGINT;
+        v_upper := (p_parameters->>1)::BIGINT;
+        IF v_lower IS NULL OR v_upper IS NULL OR v_lower >= v_upper THEN
+            RAISE EXCEPTION 'kvpredicate range requires lower < upper';
+        END IF;
+        v_predicate := jsonb_build_object('kind', 'range', 'lower', v_lower, 'upper', v_upper);
     ELSE
         RAISE EXCEPTION 'unknown kvpredicate predicate kind: %', p_kind;
     END IF;
@@ -372,7 +381,8 @@ BEGIN
        OR (p_kind = 'eq' AND semantic = p_target)
        OR (p_kind = 'mod' AND MOD(semantic, p_modulus) = p_target)
        OR (p_kind = 'gt' AND semantic > p_target)
-       OR (p_kind = 'lt' AND semantic < p_target);
+       OR (p_kind = 'lt' AND semantic < p_target)
+       OR (p_kind = 'range' AND semantic > v_lower AND semantic < v_upper);
 
     INSERT INTO ser_kvpredicate_trace.trace_op
         (xid, op_index, op_type, predicate, results, sql_text, parameters)

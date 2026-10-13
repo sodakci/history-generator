@@ -37,7 +37,9 @@ EXPECTED_VERDICT=${EXPECTED_VERDICT:-}
 SERIAL_ORDER=${SERIAL_ORDER:-}
 ISOLATION=${ISOLATION:-}
 TXNS_PER_SESSION=${TXNS_PER_SESSION:-}
+READ_RATIO=${READ_RATIO:-}
 PREDICATE_READ_RATIO=${PREDICATE_READ_RATIO:-}
+PREDICATE_RANGE_ENABLED=${PREDICATE_RANGE_ENABLED:-}
 PREDICATE_TRANSACTION_RATIO=${PREDICATE_TRANSACTION_RATIO:-}
 WRITES_PER_TRANSACTION=${WRITES_PER_TRANSACTION:-}
 WRITE_KEY_COUNT=${WRITE_KEY_COUNT:-}
@@ -70,6 +72,14 @@ case "$KV_PREDICATE_ANOMALY_ISOLATE_BACKGROUND" in
   true|false) ;;
   *)
     echo "KV_PREDICATE_ANOMALY_ISOLATE_BACKGROUND must be true or false" >&2
+    exit 2
+    ;;
+esac
+
+case "$PREDICATE_RANGE_ENABLED" in
+  ""|true|false) ;;
+  *)
+    echo "PREDICATE_RANGE_ENABLED must be true or false" >&2
     exit 2
     ;;
 esac
@@ -129,7 +139,9 @@ export KV_PREDICATE_ANOMALY_SEED
 export KV_PREDICATE_ANOMALY_ISOLATE_BACKGROUND
 export ISOLATION
 export TXNS_PER_SESSION
+export READ_RATIO
 export PREDICATE_READ_RATIO
+export PREDICATE_RANGE_ENABLED
 export PREDICATE_TRANSACTION_RATIO
 export WRITES_PER_TRANSACTION
 export WRITE_KEY_COUNT
@@ -174,7 +186,9 @@ overrides = {
     "maxWritesPerKey": "MAX_WRITES_PER_KEY",
     "predicateGroupCount": "PREDICATE_GROUP_COUNT",
     "transactionsPerSession": "TXNS_PER_SESSION",
+    "readRatio": "READ_RATIO",
     "predicateReadRatio": "PREDICATE_READ_RATIO",
+    "predicateRangeEnabled": "PREDICATE_RANGE_ENABLED",
     "predicateTransactionRatio": "PREDICATE_TRANSACTION_RATIO",
     "writesPerTransaction": "WRITES_PER_TRANSACTION",
     "writeKeyCount": "WRITE_KEY_COUNT",
@@ -260,6 +274,10 @@ transactions_per_session = int(root.findtext("transactionsPerSession", "0"))
 if transactions_per_session > 0:
     terminals = int(root.findtext("terminals"))
     counts = collections.Counter()
+    operation_counts = collections.Counter()
+    read_ratio = float(root.findtext("readRatio", "-1"))
+    min_length = int(root.findtext("minTxnLength", "1"))
+    max_length = int(root.findtext("maxTxnLength", "4"))
     process = subprocess.Popen(
         ["zstd", "-q", "-d", "-c", history_path],
         stdout=subprocess.PIPE,
@@ -272,6 +290,11 @@ if transactions_per_session > 0:
             if line.strip():
                 transaction = json.loads(line)
                 counts[int(transaction["session"])] += 1
+                if read_ratio >= 0:
+                    operations = transaction["ops"]
+                    if not min_length <= len(operations) <= max_length:
+                        raise SystemExit("transaction operation count outside configured range")
+                    operation_counts.update(operation["type"] for operation in operations)
     if process.wait() != 0:
         raise SystemExit("failed to decompress history for session validation")
     expected = {session: transactions_per_session for session in range(terminals)}
@@ -284,6 +307,18 @@ if transactions_per_session > 0:
         "transactions/session validated: "
         f"sessions={terminals}, transactions_per_session={transactions_per_session}"
     )
+    if read_ratio >= 0:
+        total = sum(operation_counts.values())
+        expected_reads = int(total * read_ratio / 100.0 + 0.5)
+        predicate_ratio = float(root.findtext("predicateReadRatio", str(100.0 / 3.0)))
+        expected_predicates = (
+            int(expected_reads * predicate_ratio / read_ratio + 0.5) if read_ratio > 0 else 0
+        )
+        actual = (operation_counts["r"] + operation_counts["pr"], operation_counts["pr"], operation_counts["w"])
+        expected = (expected_reads, expected_predicates, total - expected_reads)
+        if actual != expected:
+            raise SystemExit(f"read/predicate/write counts mismatch: expected={expected}, actual={actual}")
+        print(f"read/predicate/write counts validated: {actual}, operations={total}")
 PY
 
 echo "Runtime config: $KVPREDICATE_CONFIG"

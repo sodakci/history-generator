@@ -6,10 +6,90 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from audit_kvpredicate_prhist import audit
-from kvpredicate_trace_to_prhist import ConversionError, convert, iter_jsonl
+from kvpredicate_trace_to_prhist import ConversionError, convert, iter_jsonl, predicate_to_query
 
 
 class KvPredicateTraceToPrhistTest(unittest.TestCase):
+    def test_conversion_preserves_open_range_predicate_results(self):
+        rows = [
+            {
+                "record_type": "initial",
+                "key": f"kv:{index}",
+                "value": value,
+                "semantic": value,
+                "row": {"k": f"k{index}", "value": value},
+            }
+            for index, value in enumerate((90, 91, 99, 100))
+        ]
+        rows.extend([
+            {
+                "record_type": "txn",
+                "txn": 10,
+                "session": 0,
+                "session_seq": 1,
+                "status": "commit",
+                "ops": [{
+                    "op_index": 0,
+                    "type": "pr",
+                    "predicate": {"kind": "range", "lower": 90, "upper": 100},
+                    "results": [
+                        {"key": "kv:1", "value": 91, "semantic": 91},
+                        {"key": "kv:2", "value": 99, "semantic": 99},
+                    ],
+                    "read_versions": [
+                        {"key": "kv:1", "value": 91},
+                        {"key": "kv:2", "value": 99},
+                    ],
+                }],
+            },
+            {
+                "record_type": "txn",
+                "txn": 11,
+                "session": 0,
+                "session_seq": 2,
+                "status": "commit",
+                "ops": [{
+                    "op_index": 0,
+                    "type": "pr",
+                    "predicate": {"kind": "range", "lower": 100, "upper": 101},
+                    "results": [],
+                    "read_versions": [],
+                }],
+            },
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            raw = root / "raw.jsonl"
+            raw.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+            case = root / "case" / "hist-00000"
+
+            manifest = convert(raw, case)
+            report = audit(case)
+            history = list(iter_jsonl(case / "history.prhist.jsonl.zst"))
+
+            self.assertTrue(report["valid"])
+            self.assertEqual(manifest["predicate_reads"], 2)
+            self.assertEqual(report["predicate_reads"], 2)
+            self.assertEqual(history[0]["ops"][0]["query"]["where"], ["value > 90", "value < 100"])
+            self.assertEqual(history[0]["ops"][0]["result"], {
+                "values": [{"k": "1", "value": 91}, {"k": "2", "value": 99}],
+                "inputs": [{"key": "kv:1", "value": 91}, {"key": "kv:2", "value": 99}],
+            })
+            self.assertEqual(history[1]["ops"][0]["query"]["where"], ["value > 100", "value < 101"])
+            self.assertEqual(history[1]["ops"][0]["result"], {"values": [], "inputs": []})
+
+    def test_conversion_rejects_invalid_range_bounds(self):
+        cases = [
+            ({"kind": "range", "lower": 90, "upper": 90}, "lower must be less than upper"),
+            ({"kind": "range", "lower": 100, "upper": 90}, "lower must be less than upper"),
+            ({"kind": "range", "upper": 100}, r"predicate\.lower: expected integer"),
+            ({"kind": "range", "lower": 90}, r"predicate\.upper: expected integer"),
+        ]
+        for predicate, expected_error in cases:
+            with self.subTest(predicate=predicate):
+                with self.assertRaisesRegex(ConversionError, expected_error):
+                    predicate_to_query(predicate, "raw.txn[0].ops[0]")
+
     def test_conversion_records_injected_write_skew_metadata(self):
         rows = [
             {

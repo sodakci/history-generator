@@ -27,6 +27,8 @@ public class Txn extends Procedure {
   private static final String GREATER_THAN_SQL =
       "SELECT k, value FROM kv WHERE value > ? ORDER BY k";
   private static final String LESS_THAN_SQL = "SELECT k, value FROM kv WHERE value < ? ORDER BY k";
+  private static final String RANGE_SQL =
+      "SELECT k, value FROM kv WHERE value > ? AND value < ? ORDER BY k";
 
   public void run(Connection conn, List<KvPredicateOperation> operations) throws SQLException {
     for (KvPredicateOperation operation : operations) {
@@ -104,6 +106,10 @@ public class Txn extends Procedure {
       case LESS_THAN:
         sql = LESS_THAN_SQL;
         parameters = new Object[] {operation.target};
+        break;
+      case RANGE:
+        sql = RANGE_SQL;
+        parameters = new Object[] {operation.lowerBound, operation.upperBound};
         break;
       default:
         throw new SQLException("unknown kvpredicate predicate: " + operation.predicateKind);

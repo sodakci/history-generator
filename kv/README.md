@@ -84,6 +84,7 @@ kv/config/kvpredicate_trace.xml
 <minTxnLength>1</minTxnLength>
 <maxTxnLength>4</maxTxnLength>
 <predicateGroupCount>4</predicateGroupCount>
+<predicateRangeEnabled>false</predicateRangeEnabled>
 <predicateTransactionRatio>-1</predicateTransactionRatio>
 <writesPerTransaction>-1</writesPerTransaction>
 <writeKeyCount>0</writeKeyCount>
@@ -102,10 +103,13 @@ kv/config/kvpredicate_trace.xml
 - 读取 XML 参数。
 - 创建 `KvPredicateLoader` 和 `KvPredicateWorker`。
 - 为每个事务生成 logical operations。
+- 随机谓词默认关闭区间：`predicateRangeEnabled=false` 或未配置时，`TRUE`、`MOD`、`EQ`、`GT`、`LT` 五类各占 `1/5`；设为 `true` 后加入 `RANGE`，六类各占 `1/6`。区间每次随机选择上下界，使用 `value > lower AND value < upper`，例如 `90 < value < 100`，不包含两端，可以返回空结果。
 - 支持 `uniform`、`exponential`、`zipf` key 分布。
 - 支持 `minTxnLength` / `maxTxnLength` 事务长度范围。
 - 维护全局递增写入值，保证每次写产生唯一版本。
 - 在 `kvPredicateAnomaly=write-skew` 时生成两个可复现、可审计的脚本化并发事务。
+
+运行脚本时可用 `PREDICATE_RANGE_ENABLED=true` 或 `PREDICATE_RANGE_ENABLED=false` 覆盖 XML 的 `predicateRangeEnabled`；环境变量未设置或为空时保留基础 XML 值，XML 缺省为 `false`。此开关只控制随机谓词集合，不改变总谓词比例、`READ_RATIO`、受控生成模式或异常核心事务。
 
 write-skew 模式保留 `k0..k4`，普通点读/写只从 `k5` 开始选择。左核心事务执行 `predicate(value=0)` 后写 `k1`，右核心事务执行 `predicate(value=1)`；`injected` 右侧写 `k0`，形成两条反向 `PR_RW`，`control` 只把该写改到隔离的 `k2`。`k3/k4` 分别用于左右核心事务的填充点读，使每个核心事务具有 `maxTxnLength` 个可见操作。谓词和写的位置由 `kvPredicateAnomalySeed` 决定，且谓词始终先于写。
 
@@ -185,6 +189,7 @@ PREDICATE
   SELECT ... WHERE MOD(value, ?) = ?
   SELECT ... WHERE value > ?
   SELECT ... WHERE value < ?
+  SELECT ... WHERE value > ? AND value < ?
 
 SLEEP / BARRIER
   只用于制造可控并发交错，不是数据库操作。
@@ -198,6 +203,7 @@ value = n
 value % m = r
 value > n
 value < n
+value > lower AND value < upper
 ```
 
 ### 7. KvPredicateOperation.java / KvPredicateRow.java
@@ -394,7 +400,7 @@ kv/kvpredicate_trace_to_prhist.py
 - `r` 转成 `{"type":"r","key":"...","value":...}`。
 - `pr` 转成当前 SER loader 支持的 `query/result` 格式。
 
-谓词转换示例：
+谓词转换示例：`range` 在 trace 中记录 `lower`、`upper`；`where` 数组的两个条件按 AND 合取，表示严格开区间。
 
 ```json
 {
@@ -402,11 +408,11 @@ kv/kvpredicate_trace_to_prhist.py
   "query": {
     "select": {"distinct": false, "columns": ["k", "value"]},
     "from": {"relation": "kv"},
-    "where": ["value % 2 = 0"]
+    "where": ["value > 90", "value < 100"]
   },
   "result": {
-    "values": [{"k": "0", "value": 0}],
-    "inputs": [{"key": "kv:0", "value": 0}]
+    "values": [{"k": "0", "value": 95}],
+    "inputs": [{"key": "kv:0", "value": 95}]
   }
 }
 ```
